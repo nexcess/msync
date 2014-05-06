@@ -32,28 +32,30 @@ import email.utils
 import logging
 import threading
 import Queue
+import time
+
+def convert_date_header_to_tuple(date_str):
+    """Convert a date from $DATE_HEADER_FORMAT to a timestruct tuple that the
+    imap APPEND command will accept
+    """
+
+    # this may also work
+    # imaplib.Time2Internaldate(email.utils.parsedate_tz(date_str)[:-1])
+    parsed_date = email.utils.parsedate_tz(date_str)
+    timestamp = datetime.datetime(*parsed_date[:6])
+    if parsed_date[-1]:
+         timestamp = timestamp - datetime.timedelta(seconds=parsed_date[-1])
+    return timetuple
 
 class MailSyncer(object):
     DATE_HEADER_FORMAT      = '%a, %d %b %Y %H:%M:%S %z'
     INTERNALDATE_FORMAT     = '%d-%b-%Y %H:%M:%S +0000'
+    MAX_QUEUE_SIZE          = 4096
 
-    def __init__(self, source_dsn, dest_dsn, parallel=False):
+    def __init__(self, source_dsn, dest_dsn):
         self.log = self._create_logger()
         self.source_dsn, self.source = self._create_target(source_dsn)
         self.dest_dsn, self.dest = self._create_target(dest_dsn)
-
-    def _convert_date_header_to_tuple(self, date_str):
-        """Convert a date from $DATE_HEADER_FORMAT to a timestruct tuple that the
-        imap APPEND command will accept
-        """
-
-        # this may also work
-        # imaplib.Time2Internaldate(email.utils.parsedate_tz(date_str)[:-1])
-        parsed_date = email.utils.parsedate_tz(date_str)
-        timestamp = datetime.datetime(*parsed_date[:6]) - datetime.timedelta(seconds=parsed_date[-1])
-        timetuple = timestamp.utctimetuple()
-        # self.log.debug('Converted Date header: %s -> %s', date_str, str(timetuple))
-        return timetuple
 
     def _create_logger(self):
         """Create a logger instance using this object's class name and the object
@@ -62,7 +64,7 @@ class MailSyncer(object):
 
         logger = logging.getLogger('{0}[{1}]'.format(self.__class__.__name__, id(self)))
         logger.addHandler(logging.StreamHandler())
-        logger.setLevel(logging.DEBUG)
+        logger.setLevel(logging.INFO)
         logger.propagate = True
         return logger
 
@@ -145,7 +147,6 @@ class MailSyncer(object):
         msg_i = 1
         total_msgs = len(mailbox) + 1
         for message in mailbox:
-            msg_date = self._convert_date_header_to_tuple(message.get('Date'))
             yield (msg_i, total_msgs, message)
             msg_i += 1
 
@@ -156,7 +157,7 @@ class MailSyncer(object):
             flags = None
 
         try:
-            dest.append(self.dest_dsn['path'], flags, self._convert_date_header_to_tuple(message.get('Date')),
+            dest.append(self.dest_dsn['path'], flags, convert_date_header_to_tuple(message.get('Date')),
                 message.as_string())
         except Exception as err:
             self.log.exception(err)
@@ -171,16 +172,17 @@ class MailSyncer(object):
         self.log.info('Copy finished')
 
     def copy_parallel(self, progress_observer=None, threads=4):
-        queue = Queue.Queue()
-        thread_pool = [CopyThread(queue, self) for _ in xrange(4)]
+        queue = Queue.Queue(maxsize=self.MAX_QUEUE_SIZE)
+        thread_pool = [CopyThread(queue, self) for _ in xrange(threads)]
         for thread in thread_pool:
             thread.daemon = True
             thread.start()
 
         self.log.info('Starting copy...')
+        self.log.info('Queueing %d messages...', len(self.source))
         for i, t, message in self._iterate_messages(self.source):
-            self.log.info('Queued message: %d/%d', i, t)
             queue.put(message)
+        self.log.info('Queueing finished')
         queue.join()
         self.log.info('Copy finished')
 
@@ -192,7 +194,8 @@ class CopyThread(threading.Thread):
         self.keep_running = True
 
     def run(self):
-        dsn, dest = self._copier.create_target(self._copier.dest_dsn)
+        err_count = 0
+        dest = self._copier._create_target_imap4(self._copier.dest_dsn, True)
         if True:
             flags = r'(\Seen)'
         else:
@@ -200,12 +203,18 @@ class CopyThread(threading.Thread):
         while self.keep_running:
             msg = self._msg_queue.get()
             try:
-                dest.append(dsn['path'], flags,
-                    MailSyncer._convert_date_header_to_tuple(self, message.get('Date')),
-                    message.as_string())
+                dest.append(self._copier.dest_dsn['path'], flags,
+                    convert_date_header_to_tuple(msg.get('Date')),
+                    msg.as_string())
             except Exception as err:
-                print err
-
+                err_count += 1
+                self._copier.log.error('Error (#%d) on message: %s -> %s @ %s',
+                    err_count, msg.get('From'), msg.get('Subject'), msg.get('Date'))
+                self._copier.log.exception(err)
+                time.sleep(1)
+                if err_count > 5:
+                    self.keep_running = False
+                    self._copier.log.warn('Max errors for this thread hit, exiting...')
             self._msg_queue.task_done()
 
 
@@ -213,14 +222,21 @@ if __name__ == '__main__':
     import optparse
     import multiprocessing
 
-    parser = OptionParser()
+    parser = optparse.OptionParser()
     parser.add_option('-t', '--threads', dest='threads',
         help='Number of threads to run, 0=# of cores, 1=single threaded',
-        action='store_int', default=0)
+        type='int', default=0)
+    parser.add_option('-q', '--quiet', action='store_true', default=False)
+    parser.add_option('-v', '--verbose', action='store_true', default=False)
 
     options, args = parser.parse_args()
 
     copier = MailSyncer(args[0], args[1])
+
+    if options.quiet:
+        copier.log.setLevel(logging.WARN)
+    elif options.verbose:
+        copier.log.setLevel(logging.DEBUG)
 
     if options.threads == 0:
         thread_count = multiprocessing.cpu_count()
@@ -229,7 +245,7 @@ if __name__ == '__main__':
     else:
         thread_count = options.threads
 
-    if options.threads > 1:
-        copier.copy_parallel(threads=options.threads)
+    if thread_count > 1:
+        copier.copy_parallel(threads=thread_count)
     else:
         copier.copy()
