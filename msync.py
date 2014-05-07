@@ -300,15 +300,21 @@ if __name__ == '__main__':
     import multiprocessing
 
     parser = optparse.OptionParser()
-    parser.add_option('-t', '--threads', dest='threads',
-        help='Number of threads to run, 0=# of cores, 1=single threaded',
-        type='int', default=0)
-    parser.add_option('-q', '--quiet', action='store_true', default=False)
-    parser.add_option('-v', '--verbose', action='store_true', default=False)
-
+    parser.add_option('-t', '--threads',
+        type='int', default=0,
+        help='Number of threads to run, 0=# of cores, 1=single threaded')
+    parser.add_option('-q', '--quiet',
+        action='store_true', default=False)
+    parser.add_option('-v', '--verbose',
+        action='store_true', default=False)
+    parser.add_option('-s', '--queue-size',
+        type='int', default=MailSyncer.MAX_QUEUE_SIZE,
+        help='Max mails to queue at once, reduce this to lower the amount of memory used')
     options, args = parser.parse_args()
 
     copier = MailSyncer(args[0], args[1])
+
+    copier.MAX_QUEUE_SIZE = max(options.queue_size, 256)
 
     if options.quiet:
         copier.log.setLevel(logging.WARN)
@@ -320,7 +326,7 @@ if __name__ == '__main__':
     elif options.threads == 1:
         thread_count = 1
     else:
-        thread_count = options.threads
+        thread_count = max(options.threads, 1)
 
     if thread_count > 1:
         copier.copy_parallel(threads=thread_count)
