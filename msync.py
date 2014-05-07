@@ -215,7 +215,7 @@ class CopyThread(threading.Thread):
                     err_count, msg.get('From'), msg.get('Subject'), msg.get('Date'))
                 self._copier.log.exception(err)
                 time.sleep(1)
-                if err_count > 5:
+                if err_count >= 5:
                     self.keep_running = False
                     self._copier.log.warn('Max errors for this thread hit, exiting...')
             self._msg_queue.task_done()
