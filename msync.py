@@ -208,7 +208,20 @@ class CopyThread(threading.Thread):
         self.keep_running = True
 
     def _create_target(self):
-        return self._copier._create_target_imap4(self._copier.dest_dsn, True)
+        for i in xrange(self.MAX_IMAP_ERRORS):
+            try:
+                target = self._copier._create_target_imap4(self._copier.dest_dsn, True)
+            except imaplib.IMAP.error as err:
+                self.log.warn('Error when attempting to login, attempt #%d', i+1)
+                self.log.exception(err)
+                time.sleep(2)
+            else:
+                break
+        else:
+            self.log.error('Failed to login after %d attempts, giving up',
+                self.MAX_IMAP_ERRORS)
+            raise Exception('Login attempt(s) failed, giving up')
+        return target
 
     def _requeue_msg(self, message, cur_retries):
         if cur_retries <= self.MAX_MSG_RETRIES:
