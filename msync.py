@@ -172,11 +172,13 @@ class MailSyncer(object):
         self.log.info('Copy finished')
 
     def copy_parallel(self, progress_observer=None, threads=4):
+        self.log.debug('Starting threads')
         queue = Queue.Queue(maxsize=self.MAX_QUEUE_SIZE)
         thread_pool = [CopyThread(queue, self) for _ in xrange(threads)]
         for thread in thread_pool:
             thread.daemon = True
             thread.start()
+            time.sleep(2)
 
         self.log.info('Starting copy...')
         self.log.info('Queueing %d messages...', len(self.source))
