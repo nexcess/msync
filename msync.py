@@ -52,15 +52,20 @@ def convert_date_header_to_tuple(date_str):
         timetuple = datetime.datetime.now().utctimetuple()
     return timetuple
 
+def wait(seconds):
+    """Sleep for at least $seconds, plus a random amount of milliseconds (NYI)
+    """
+    time.sleep(seconds)
+
 class MailSyncer(object):
     DATE_HEADER_FORMAT      = '%a, %d %b %Y %H:%M:%S %z'
     INTERNALDATE_FORMAT     = '%d-%b-%Y %H:%M:%S +0000'
-    MAX_QUEUE_SIZE          = 4096
+    MAX_QUEUE_SIZE          = 1024 * 8
 
     def __init__(self, source_dsn, dest_dsn):
         self.log = self._create_logger()
-        self.source_dsn, self.source = self._create_target(source_dsn)
-        self.dest_dsn, self.dest = self._create_target(dest_dsn)
+        self.source_dsn = self._parse_dsn(source_dsn)
+        self.dest_dsn = self._parse_dsn(dest_dsn)
 
     def _create_logger(self):
         """Create a logger instance using this object's class name and the object
@@ -110,14 +115,13 @@ class MailSyncer(object):
         return dsn
 
     def _create_target(self, dsn):
-        parsed_dsn = self._parse_dsn(dsn)
         target = {
             'imap': lambda dsn: self._create_target_imap4(dsn, False),
             'imaps': lambda dsn: self._create_target_imap4(dsn, True),
             'mbox': self._create_target_mbox,
             'maildir': self._create_target_maildir,
-        }.get(parsed_dsn['type'])(parsed_dsn)
-        return parsed_dsn, target
+        }.get(dsn['type'])(dsn)
+        return target
 
     def _create_target_mbox(self, dsn):
         conn = mailbox.mbox(dsn['path'], create=False)
@@ -174,14 +178,18 @@ class MailSyncer(object):
         return thread
 
     def copy(self, progress_observer=None):
+        source = self._create_target(source_dsn)
+        dest = self._create_target(dest_dsn)
         self.log.info('Starting copy...')
-        for i, total, message in self._iterate_messages(self.source):
+        for i, total, message in self._iterate_messages(source):
             self.log.info('Copying message (%d/%d): %s -> %s @ %s', i, total,
                 message.get('From'), message.get('Subject'), message.get('Date'))
-            self._copy_message(message, self.dest)
+            self._copy_message(message, dest)
         self.log.info('Copy finished')
 
     def copy_parallel(self, progress_observer=None, threads=4):
+        source = self._create_target(self.source_dsn)
+
         self.log.debug('Starting threads')
         queue = Queue.Queue(maxsize=self.MAX_QUEUE_SIZE)
         for _ in xrange(threads):
@@ -190,8 +198,13 @@ class MailSyncer(object):
 
         self.log.info('Starting copy...')
         self.log.info('Found %d messages to copy', len(self.source))
-        for i, t, message in self._iterate_messages(self.source):
-            queue.put((message, 0))
+        self.log.debug('Queueing messages...')
+        for i, t, message in self._iterate_messages(source):
+            queue.put((message, 0),)
+        self.log.debug('Queueing finished')
+        while not queue.empty():
+            self.log.debug('Queue draining: ~%d/%d', queue.qsize(), self.MAX_QUEUE_SIZE)
+            time.sleep(10)
         queue.join()
         self.log.info('Copy finished')
 
@@ -210,7 +223,7 @@ class CopyThread(threading.Thread):
     def _create_target(self):
         for i in xrange(self.MAX_IMAP_ERRORS):
             try:
-                target = self._copier._create_target_imap4(self._copier.dest_dsn, True)
+                target = self._copier._create_target(self._copier.dest_dsn)
             except imaplib.IMAP4.error as err:
                 self.log.warn('Error when attempting to login, attempt #%d', i+1)
                 self.log.exception(err)
@@ -224,13 +237,14 @@ class CopyThread(threading.Thread):
         return target
 
     def _requeue_msg(self, message, cur_retries):
-        if cur_retries <= self.MAX_MSG_RETRIES:
-            self._msg_queue.put((message, cur_retries + 1))
-        else:
+        if cur_retries >= self.MAX_MSG_RETRIES:
             self.log.warn('Message retried too many times, dropping it: %s -> %s @ %s',
                 message.get('From'), message.get('Subject'), message.get('Date'))
+        else:
+            self._msg_queue.put((message, cur_retries + 1),)
 
     def run(self):
+        self.log.debug('Thread (%s) run() started', self.ident)
         unkn_err_count = 0
         imap_err_count = 0
         dest = self._create_target()
@@ -241,6 +255,7 @@ class CopyThread(threading.Thread):
             flags = None
         while self.keep_running:
             msg, msg_retries = self._msg_queue.get()
+            self._msg_queue.task_done()
             try:
                 dest.append(dest_path, flags,
                     convert_date_header_to_tuple(msg.get('Date')),
@@ -265,7 +280,8 @@ class CopyThread(threading.Thread):
                     self.keep_running = False
                 else:
                     dest = self._create_target()
-                self._requeue_msg(msg, msg_retries)
+                if not 'too large' in str(err): #cheap way to skip requeueing messages that are too large
+                    self._requeue_msg(msg, msg_retries)
             except Exception as err:
                 unkn_err_count += 1
                 self.log.error('Unknown error (#%d) on message: %s -> %s @ %s',
@@ -276,8 +292,8 @@ class CopyThread(threading.Thread):
                     self.log.warn('Max unknown errors for this thread hit, exiting...')
                     self.keep_running = False
                 self._requeue_msg(msg, msg_retries)
-            self._msg_queue.task_done()
 
+        self.log.debug('Thread (%s) run() stopped', self.ident)
 
 if __name__ == '__main__':
     import optparse
