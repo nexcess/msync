@@ -182,10 +182,9 @@ class MailSyncer(object):
             time.sleep(2)
 
         self.log.info('Starting copy...')
-        self.log.info('Queueing %d messages...', len(self.source))
+        self.log.info('Found %d messages to copy', len(self.source))
         for i, t, message in self._iterate_messages(self.source):
             queue.put(message)
-        self.log.info('Queueing finished')
         queue.join()
         self.log.info('Copy finished')
 
