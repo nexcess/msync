@@ -45,6 +45,7 @@ def convert_date_header_to_tuple(date_str):
     timestamp = datetime.datetime(*parsed_date[:6])
     if parsed_date[-1]:
          timestamp = timestamp - datetime.timedelta(seconds=parsed_date[-1])
+    timetuple = timestamp.utctimetuple()
     return timetuple
 
 class MailSyncer(object):
