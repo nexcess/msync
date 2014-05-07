@@ -42,8 +42,8 @@ def convert_date_header_to_tuple(date_str):
 
     # this may also work
     # imaplib.Time2Internaldate(email.utils.parsedate_tz(date_str)[:-1])
-    parsed_date = email.utils.parsedate_tz(date_str)
-    if parsed_date is not None:
+    if date_str is not None:
+        parsed_date = email.utils.parsedate_tz(date_str)
         timestamp = datetime.datetime(*parsed_date[:6])
         if parsed_date[-1]:
              timestamp = timestamp - datetime.timedelta(seconds=parsed_date[-1])
