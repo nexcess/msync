@@ -211,7 +211,7 @@ class CopyThread(threading.Thread):
         for i in xrange(self.MAX_IMAP_ERRORS):
             try:
                 target = self._copier._create_target_imap4(self._copier.dest_dsn, True)
-            except imaplib.IMAP.error as err:
+            except imaplib.IMAP4.error as err:
                 self.log.warn('Error when attempting to login, attempt #%d', i+1)
                 self.log.exception(err)
                 time.sleep(2)
