@@ -34,6 +34,88 @@ import threading
 import Queue
 import time
 import socket
+import collections
+
+class Dequeue(collections.deque):
+    """A collections.deque that looks like a Queue.Queue
+    """
+
+    MICROSLEEP_STEP = 0.01
+
+    def __init__(self, maxsize=None):
+        collections.deque.__init__(self)
+        self.__queue_maxsize = maxsize
+
+    def __now(self):
+        return time.time()
+
+    def __wait(self):
+        time.sleep(self.MICROSLEEP_STEP)
+
+    def qsize(self):
+        return len(self)
+
+    def empty(self):
+        return len(self) == 0
+
+    def full(self):
+        return len(self) == self.__queue_maxsize \
+            if self.__queue_maxsize is not None else False
+
+    def put(self, item, block=True, timeout=None): #Full
+        if block:
+            if timeout is not None:
+                start = self.__now()
+                while not self.full():
+                    if self.__now() > start + timeout:
+                        raise Queue.Full()
+                    self.__wait()
+                self.appendleft(item)
+
+            else:
+                while not self.full():
+                    self.__wait()
+                self.appendleft(item)
+        else:
+            if not self.full():
+                self.appendleft(item)
+            else:
+                raise Queue.Full()
+
+    def put_nowait(self, item):
+        self.put(item, False)
+
+    def get(self, block=True, timeout=None): #IndexError -> Empty
+        if block:
+            if timeout is not None:
+                start = self.__now()
+                while True:
+                    try:
+                        return self.pop()
+                    except IndexError as qerr:
+                        if self.__now() > start + timeout:
+                            raise Queue.Empty(qerr)
+                    self.__wait()
+            else:
+                while True:
+                    try:
+                        return self.pop()
+                    except IndexError as qerr:
+                        self.__wait()
+        else:
+            try:
+                return self.pop()
+            except IndexError as qerr:
+                raise Queue.Empty(qerr)
+
+    def get_nowait(self):
+        return self.get(False)
+
+    def task_done(self): pass
+
+    def join(self):
+        while not self.empty():
+            self.__wait()
 
 def convert_date_header_to_tuple(date_str):
     """Convert a date from $DATE_HEADER_FORMAT to a timestruct tuple that the
