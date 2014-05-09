@@ -143,6 +143,7 @@ class MailSyncer(object):
     DATE_HEADER_FORMAT      = '%a, %d %b %Y %H:%M:%S %z'
     INTERNALDATE_FORMAT     = '%d-%b-%Y %H:%M:%S +0000'
     MAX_QUEUE_SIZE          = 1024 * 8
+    PROGRESS_STEP_SIZE      = 15
 
     def __init__(self, source_dsn, dest_dsn):
         self.log = self._create_logger()
@@ -278,15 +279,17 @@ class MailSyncer(object):
             self._spawn_thread(queue)
             time.sleep(2)
 
-        self.log.info('Starting copy...')
         self.log.info('Found %d messages to copy', len(source))
-        self.log.debug('Queueing messages...')
         for i, t, message in self._iterate_messages(source):
+            # TODO: check if any threads still alive
             queue.put((message, 0),)
+            if i % self.PROGRESS_STEP_SIZE == 0:
+                self.log.info('Added messages to queue: %d/%d', i, t)
         self.log.debug('Queueing finished')
         while not queue.empty():
-            self.log.debug('Queue draining: ~%d/%d', queue.qsize(), self.MAX_QUEUE_SIZE)
-            time.sleep(10)
+            # TODO: check if any threads still alive
+            self.log.info('Messages left in queue: ~%d/%d', queue.qsize(), self.MAX_QUEUE_SIZE)
+            time.sleep(self.PROGRESS_STEP_SIZE)
         queue.join()
         self.log.info('Copy finished')
 
@@ -307,8 +310,7 @@ class CopyThread(threading.Thread):
             try:
                 target = self._copier._create_target(self._copier.dest_dsn)
             except imaplib.IMAP4.error as err:
-                self.log.warn('Error when attempting to login, attempt #%d', i+1)
-                self.log.exception(err)
+                self.log.warn('Error when attempting to login, attempt #%d: %s', i+1, err)
                 time.sleep(2)
             else:
                 break
@@ -343,35 +345,35 @@ class CopyThread(threading.Thread):
                     convert_date_header_to_tuple(msg.get('Date')),
                     msg.as_string())
             except socket.error as err:
-                self.log.error('Socket error on thread: %s', self.ident)
-                self.log.debug(err)
-                self.log.info('Respawning...')
+                self.log.warn('Socket error on thread(%s): %s', self.ident, err)
+                self.log.debug('Thread respawning...')
                 self._copier._spawn_thread(self._msg_queue)
                 self._requeue_msg(msg, msg_retries)
                 self.keep_running = False
             except imaplib.IMAP4.error as err:
                 imap_err_count += 1
-                self.log.error('IMAP error (#%d) on message: %s -> %s @ %s',
+                self.log.warn('IMAP error (#%d) on message: %s -> %s @ %s',
                     imap_err_count, msg.get('From'), msg.get('Subject'), msg.get('Date'))
                 self.log.exception(err)
                 time.sleep(1)
-                self.log.info('Reconnecting to IMAP server and requeueing message')
+                self.log.debug('Reconnecting to IMAP server and requeueing message')
                 if imap_err_count >= self.MAX_IMAP_ERRORS:
                     self.log.warn('Max IMAP errors for this thread hit, respawning...')
                     self._copier._spawn_thread(self._msg_queue)
                     self.keep_running = False
                 else:
                     dest = self._create_target()
-                if not 'too large' in str(err): #cheap way to skip requeueing messages that are too large
+                # cheap way to skip requeueing messages that are too large
+                if not 'too large' in str(err):
                     self._requeue_msg(msg, msg_retries)
             except Exception as err:
                 unkn_err_count += 1
-                self.log.error('Unknown error (#%d) on message: %s -> %s @ %s',
+                self.log.warn('Unknown error (#%d) on message: %s -> %s @ %s',
                     unkn_err_count, msg.get('From'), msg.get('Subject'), msg.get('Date'))
                 self.log.exception(err)
                 time.sleep(1)
                 if unkn_err_count >= self.MAX_UNKN_ERRORS:
-                    self.log.warn('Max unknown errors for this thread hit, exiting...')
+                    self.log.error('Max unknown errors for this thread hit, exiting...')
                     self.keep_running = False
                 self._requeue_msg(msg, msg_retries)
 
